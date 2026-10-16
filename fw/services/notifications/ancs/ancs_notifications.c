@@ -243,11 +243,11 @@ static bool prv_should_ignore_notification(uint32_t uid, time_t timestamp,
     return true;
   }
 
-  if (ancs_filtering_matches_rules(app_notif_prefs, title, subtitle, message)) {
+  if (ancs_filtering_should_ignore_by_rules(app_notif_prefs, title, subtitle, message)) {
     char app_id_buffer[app_id->length + 1];
     pbl_pstring16_to_cstring(&app_id->pstr, app_id_buffer);
 
-    PBL_LOG_DBG("Ignoring notification from <%s>: Matched filtering rule", app_id_buffer);
+    PBL_LOG_DBG("Ignoring notification from <%s>: Filtering rules", app_id_buffer);
     return true;
   }
 

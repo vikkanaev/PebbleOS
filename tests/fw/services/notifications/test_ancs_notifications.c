@@ -39,8 +39,10 @@ bool ancs_filtering_is_muted(const iOSNotifPrefs *app_notif_prefs) {
   return false;
 }
 
-bool ancs_filtering_matches_rules(const iOSNotifPrefs *app_notif_prefs, const ANCSAttribute *title,
-                                  const ANCSAttribute *subtitle, const ANCSAttribute *body) {
+bool ancs_filtering_should_ignore_by_rules(const iOSNotifPrefs *app_notif_prefs,
+                                           const ANCSAttribute *title,
+                                           const ANCSAttribute *subtitle,
+                                           const ANCSAttribute *body) {
   return false;
 }
 
