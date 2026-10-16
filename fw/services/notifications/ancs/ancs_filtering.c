@@ -108,28 +108,55 @@ static bool prv_match_rule(uint8_t match_type, uint8_t match_field, bool case_se
           (match_body && prv_match_contains(body, body_len, pattern, pattern_len, case_sensitive)));
 }
 
-bool ancs_filtering_matches_rules(const iOSNotifPrefs *app_notif_prefs,
-                                  const ANCSAttribute *title_attr,
-                                  const ANCSAttribute *subtitle_attr,
-                                  const ANCSAttribute *body_attr) {
-  if (!app_notif_prefs) {
+// A rule whose pattern is "@allow" (trimmed, ASCII case-insensitive) switches the app's
+// rules from a block-list to an allow-list. Its field and case flags are ignored.
+static const char s_allow_marker[] = "@allow";
+
+static bool prv_is_allow_marker(const char *pattern, size_t pattern_len) {
+  while ((pattern_len > 0) && (pattern[0] == ' ')) {
+    pattern++;
+    pattern_len--;
+  }
+  while ((pattern_len > 0) && (pattern[pattern_len - 1] == ' ')) {
+    pattern_len--;
+  }
+  const size_t marker_len = sizeof(s_allow_marker) - 1;
+  if (pattern_len != marker_len) {
     return false;
   }
+  for (size_t i = 0; i < marker_len; i++) {
+    if (prv_ascii_to_lower(pattern[i]) != s_allow_marker[i]) {
+      return false;
+    }
+  }
+  return true;
+}
 
+typedef struct {
+  bool has_allow_marker;
+  bool matched;
+} FilteringRulesResult;
+
+static FilteringRulesResult prv_evaluate_rules(const iOSNotifPrefs *app_notif_prefs,
+                                               const ANCSAttribute *title_attr,
+                                               const ANCSAttribute *subtitle_attr,
+                                               const ANCSAttribute *body_attr) {
+  FilteringRulesResult result = {};
+  if (!app_notif_prefs) {
+    return result;
+  }
   struct pbl_string_list *rules =
       attribute_get_string_list(&app_notif_prefs->attr_list, AttributeIdNotificationFilteringRules);
   if (!rules || (rules->serialized_byte_length == 0)) {
-    return false;
+    return result;
   }
 
   size_t title_len = 0;
   char *allocated_title = prv_attr_to_cstring(title_attr, &title_len);
   const char *title = allocated_title ? allocated_title : "";
-
   size_t subtitle_len = 0;
   char *allocated_subtitle = prv_attr_to_cstring(subtitle_attr, &subtitle_len);
   const char *subtitle = allocated_subtitle ? allocated_subtitle : "";
-
   size_t body_len = 0;
   char *allocated_body = prv_attr_to_cstring(body_attr, &body_len);
   const char *body = allocated_body ? allocated_body : "";
@@ -137,40 +164,49 @@ bool ancs_filtering_matches_rules(const iOSNotifPrefs *app_notif_prefs,
   const FilteringRulesSerialized *serialized_rules = (const FilteringRulesSerialized *)rules->data;
   size_t remaining = rules->serialized_byte_length - 1;
   const uint8_t *cursor = serialized_rules->data;
-
-  bool matched = false;
+  // No early exit: a marker may follow a matching rule.
   for (uint8_t i = 0; i < serialized_rules->count; i++) {
     if (remaining < sizeof(FilteringRuleSerialized)) {
       break;
     }
-
     const FilteringRuleSerialized *rule = (const FilteringRuleSerialized *)cursor;
     cursor += sizeof(FilteringRuleSerialized);
     remaining -= sizeof(FilteringRuleSerialized);
-
     const char *pattern = (const char *)cursor;
     const char *terminator = memchr(cursor, '\0', remaining);
     if (!terminator) {
       break;
     }
-
     const size_t pattern_len = (size_t)(terminator - pattern);
-    matched =
-        prv_match_rule(rule->match_type, rule->match_field, (rule->case_sensitive != 0), pattern,
-                       pattern_len, title, title_len, subtitle, subtitle_len, body, body_len);
-
+    if (prv_is_allow_marker(pattern, pattern_len)) {
+      result.has_allow_marker = true;
+    } else if (!result.matched) {
+      result.matched =
+          prv_match_rule(rule->match_type, rule->match_field, (rule->case_sensitive != 0), pattern,
+                         pattern_len, title, title_len, subtitle, subtitle_len, body, body_len);
+    }
     cursor = (const uint8_t *)(terminator + 1);
     remaining -= (pattern_len + 1);
-
-    if (matched) {
-      break;
-    }
   }
 
   kernel_free(allocated_body);
   kernel_free(allocated_subtitle);
   kernel_free(allocated_title);
-  return matched;
+  return result;
+}
+
+bool ancs_filtering_should_ignore_by_rules(const iOSNotifPrefs *app_notif_prefs,
+                                           const ANCSAttribute *title_attr,
+                                           const ANCSAttribute *subtitle_attr,
+                                           const ANCSAttribute *body_attr) {
+  const FilteringRulesResult result =
+      prv_evaluate_rules(app_notif_prefs, title_attr, subtitle_attr, body_attr);
+  if (result.has_allow_marker) {
+    // Allow-list: only notifications matching some rule get through.
+    return !result.matched;
+  }
+  // Block-list: matching a rule drops the notification.
+  return result.matched;
 }
 
 void ancs_filtering_record_app(iOSNotifPrefs **notif_prefs, const ANCSAttribute *app_id,

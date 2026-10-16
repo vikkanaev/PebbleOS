@@ -55,14 +55,34 @@ static uint8_t title_data[] = {
 };
 static ANCSAttribute *s_title_attr = (ANCSAttribute *)&title_data;
 
+static uint8_t cyrillic_title_data[] = {
+  0x01,                                           // id
+  0x08, 0x00,                                     // length
+  0xD0, 0x9C, 0xD0, 0xB0, 0xD0, 0xBC, 0xD0, 0xB0, // "Мама"
+};
+static ANCSAttribute *s_cyrillic_title_attr = (ANCSAttribute *)&cyrillic_title_data;
+
 typedef union {
   struct pbl_string_list list;
-  uint8_t storage[PBL_STRING_LIST_SIZE(1, 16)];
+  uint8_t storage[PBL_STRING_LIST_SIZE(4, 32)];
 } FilteringRules;
 
 static void prv_set_rules(FilteringRules *rules, const char *data, uint16_t length) {
   rules->list.serialized_byte_length = length;
   memcpy(rules->list.data, data, length);
+}
+
+static iOSNotifPrefs prv_prefs_with_rules(FilteringRules *rules) {
+  // Static: a compound literal here would dangle once the helper returns.
+  static Attribute s_attribute;
+  s_attribute =
+      (Attribute){.id = AttributeIdNotificationFilteringRules, .string_list = &rules->list};
+  return (iOSNotifPrefs){
+    .attr_list = {
+      .num_attributes = 1,
+      .attributes = &s_attribute,
+    },
+  };
 }
 
 static FilteringRules s_empty_filtering_rules;
@@ -431,7 +451,7 @@ void test_ancs_filtering__matches_text_rule_body_case_insensitive(void) {
     },
   };
 
-  cl_assert(ancs_filtering_matches_rules(&prefs, s_title_attr, nullptr, body_attr));
+  cl_assert(ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, body_attr));
 }
 
 void test_ancs_filtering__matches_text_rule_title_case_sensitive(void) {
@@ -450,7 +470,7 @@ void test_ancs_filtering__matches_text_rule_title_case_sensitive(void) {
     },
   };
 
-  cl_assert(ancs_filtering_matches_rules(&prefs, s_title_attr, nullptr, nullptr));
+  cl_assert(ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, nullptr));
 }
 
 void test_ancs_filtering__does_not_match_regex_rule(void) {
@@ -469,7 +489,7 @@ void test_ancs_filtering__does_not_match_regex_rule(void) {
     },
   };
 
-  cl_assert(!ancs_filtering_matches_rules(&prefs, s_title_attr, nullptr, nullptr));
+  cl_assert(!ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, nullptr));
 }
 
 void test_ancs_filtering__matches_text_rule_title_via_subtitle(void) {
@@ -495,8 +515,146 @@ void test_ancs_filtering__matches_text_rule_title_via_subtitle(void) {
   };
 
   // "server" is in the subtitle, not the title: a title rule must match it.
-  cl_assert(ancs_filtering_matches_rules(&prefs, s_title_attr, subtitle_attr, nullptr));
+  cl_assert(ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, subtitle_attr, nullptr));
   // A body rule must not consider the subtitle.
   filtering_rules.list.data[2] = 0x02;
-  cl_assert(!ancs_filtering_matches_rules(&prefs, s_title_attr, subtitle_attr, nullptr));
+  cl_assert(!ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, subtitle_attr, nullptr));
+}
+
+void test_ancs_filtering__no_rules_passes(void) {
+  iOSNotifPrefs prefs = prv_prefs_with_rules(&s_empty_filtering_rules);
+  cl_assert(!ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, nullptr));
+}
+
+void test_ancs_filtering__block_mode_non_matching_rule_passes(void) {
+  FilteringRules rules;
+  // count=1, text, title, insensitive, "google\0"
+  prv_set_rules(&rules, (const char[]){0x01, 0x00, 0x01, 0x00, 'g', 'o', 'o', 'g', 'l', 'e', '\0'},
+                11);
+  iOSNotifPrefs prefs = prv_prefs_with_rules(&rules);
+  cl_assert(!ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, nullptr));
+}
+
+void test_ancs_filtering__allow_mode_matching_title_passes(void) {
+  FilteringRules rules;
+  // count=2: "@allow\0" (any, insensitive), then text/title/sensitive "Apple\0"
+  prv_set_rules(&rules, (const char[]){0x02, 0x00, 0x00, 0x00, '@', 'a', 'l', 'l', 'o', 'w',
+                                       '\0', 0x00, 0x01, 0x01, 'A', 'p', 'p', 'l', 'e', '\0'},
+                20);
+  iOSNotifPrefs prefs = prv_prefs_with_rules(&rules);
+  cl_assert(!ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, nullptr));
+}
+
+void test_ancs_filtering__allow_mode_non_matching_title_is_ignored(void) {
+  FilteringRules rules;
+  // count=2: "@allow\0", then text/title/insensitive "google\0"
+  prv_set_rules(&rules, (const char[]){0x02, 0x00, 0x00, 0x00, '@', 'a', 'l', 'l', 'o', 'w', '\0',
+                                       0x00, 0x01, 0x00, 'g',  'o', 'o', 'g', 'l', 'e', '\0'},
+                21);
+  iOSNotifPrefs prefs = prv_prefs_with_rules(&rules);
+  cl_assert(ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, nullptr));
+}
+
+void test_ancs_filtering__allow_mode_marker_only_ignores_everything(void) {
+  FilteringRules rules;
+  // count=1: "@allow\0"
+  prv_set_rules(&rules, (const char[]){0x01, 0x00, 0x00, 0x00, '@', 'a', 'l', 'l', 'o', 'w', '\0'},
+                11);
+  iOSNotifPrefs prefs = prv_prefs_with_rules(&rules);
+  cl_assert(ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, nullptr));
+}
+
+void test_ancs_filtering__allow_marker_tolerates_case_spaces_field_and_flags(void) {
+  FilteringRules rules;
+  // count=2: " @ALLOW \0" stored as body + case-sensitive (both ignored for a marker),
+  // then text/title/insensitive "google\0" which does not match the title
+  prv_set_rules(&rules,
+                (const char[]){0x02, 0x00, 0x02, 0x01, ' ', '@', 'A', 'L', 'L', 'O', 'W', ' ',
+                               '\0', 0x00, 0x01, 0x00, 'g', 'o', 'o', 'g', 'l', 'e', '\0'},
+                23);
+  iOSNotifPrefs prefs = prv_prefs_with_rules(&rules);
+  // Without the marker this list would pass; the marker turns it into an empty-match allow-list.
+  cl_assert(ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, nullptr));
+}
+
+void test_ancs_filtering__allow_marker_after_other_rules_still_enables_allow_mode(void) {
+  FilteringRules rules;
+  // count=2: text/title/sensitive "Apple\0" (matches), then "@allow\0"
+  prv_set_rules(&rules, (const char[]){0x02, 0x00, 0x01, 0x01, 'A', 'p', 'p', 'l', 'e', '\0',
+                                       0x00, 0x00, 0x00, '@',  'a', 'l', 'l', 'o', 'w', '\0'},
+                20);
+  iOSNotifPrefs prefs = prv_prefs_with_rules(&rules);
+  // In block mode "Apple" would be ignored; the trailing marker flips it to allow mode => passes.
+  cl_assert(!ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, nullptr));
+}
+
+void test_ancs_filtering__allow_mode_regex_rule_never_matches(void) {
+  FilteringRules rules;
+  // count=2: "@allow\0", then regex/any/insensitive ".*\0"
+  prv_set_rules(
+      &rules,
+      (const char[]){
+        0x02, 0x00, 0x00, 0x00, '@', 'a', 'l', 'l', 'o', 'w', '\0', 0x01, 0x00, 0x00, '.', '*', '\0'
+      },
+      17);
+  iOSNotifPrefs prefs = prv_prefs_with_rules(&rules);
+  cl_assert(ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, nullptr));
+}
+
+void test_ancs_filtering__allow_mode_empty_pattern_matches_everything(void) {
+  FilteringRules rules;
+  // count=2: "@allow\0", then text/title/insensitive "\0" (empty pattern)
+  prv_set_rules(&rules,
+                (const char[]){
+                  0x02, 0x00, 0x00, 0x00, '@', 'a', 'l', 'l', 'o', 'w', '\0', 0x00, 0x01, 0x00, '\0'
+                },
+                15);
+  iOSNotifPrefs prefs = prv_prefs_with_rules(&rules);
+  cl_assert(!ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, nullptr));
+}
+
+void test_ancs_filtering__truncated_rules_without_marker_pass(void) {
+  FilteringRules rules;
+  // count=1, text/title/insensitive, pattern "goo" with NO terminator
+  prv_set_rules(&rules, (const char[]){0x01, 0x00, 0x01, 0x00, 'g', 'o', 'o'}, 7);
+  iOSNotifPrefs prefs = prv_prefs_with_rules(&rules);
+  cl_assert(!ancs_filtering_should_ignore_by_rules(&prefs, s_title_attr, nullptr, nullptr));
+}
+
+void test_ancs_filtering__allow_mode_null_title_is_ignored_not_crashing(void) {
+  FilteringRules rules;
+  // count=2: "@allow\0", then text/title/sensitive "Apple\0"
+  prv_set_rules(&rules, (const char[]){0x02, 0x00, 0x00, 0x00, '@', 'a', 'l', 'l', 'o', 'w',
+                                       '\0', 0x00, 0x01, 0x01, 'A', 'p', 'p', 'l', 'e', '\0'},
+                20);
+  iOSNotifPrefs prefs = prv_prefs_with_rules(&rules);
+  cl_assert(ancs_filtering_should_ignore_by_rules(&prefs, nullptr, nullptr, nullptr));
+}
+
+void test_ancs_filtering__allow_mode_cyrillic_exact_case_only(void) {
+  FilteringRules exact_rules;
+  // count=2: "@allow\0", then text/title/insensitive "Мама\0" (D0 9C D0 B0 D0 BC D0 B0)
+  prv_set_rules(
+      &exact_rules,
+      (const char[]){0x02,       0x00,       0x00,       0x00,       '@',        'a',
+                     'l',        'l',        'o',        'w',        '\0',       0x00,
+                     0x01,       0x00,       (char)0xD0, (char)0x9C, (char)0xD0, (char)0xB0,
+                     (char)0xD0, (char)0xBC, (char)0xD0, (char)0xB0, '\0'},
+      23);
+  iOSNotifPrefs exact_prefs = prv_prefs_with_rules(&exact_rules);
+  cl_assert(!ancs_filtering_should_ignore_by_rules(&exact_prefs, s_cyrillic_title_attr, nullptr,
+                                                   nullptr));
+
+  FilteringRules lower_rules;
+  // Same but pattern "мама\0" (D0 BC D0 B0 D0 BC D0 B0): ASCII-only folding => no match
+  prv_set_rules(
+      &lower_rules,
+      (const char[]){0x02,       0x00,       0x00,       0x00,       '@',        'a',
+                     'l',        'l',        'o',        'w',        '\0',       0x00,
+                     0x01,       0x00,       (char)0xD0, (char)0xBC, (char)0xD0, (char)0xB0,
+                     (char)0xD0, (char)0xBC, (char)0xD0, (char)0xB0, '\0'},
+      23);
+  iOSNotifPrefs lower_prefs = prv_prefs_with_rules(&lower_rules);
+  cl_assert(
+      ancs_filtering_should_ignore_by_rules(&lower_prefs, s_cyrillic_title_attr, nullptr, nullptr));
 }

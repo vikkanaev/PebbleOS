@@ -47,19 +47,12 @@ bool ancs_filtering_is_muted(const iOSNotifPrefs *app_notif_prefs);
  */
 uint8_t ancs_filtering_get_mute_type(const iOSNotifPrefs *app_notif_prefs);
 
-/**
- * @brief Check whether a notification matches one of the app's filtering rules.
- *
- * Rules do plain substring matches, optionally case-insensitive (ASCII only), against the title
- * (which includes the subtitle), the body or either. Regex rules never match.
- *
- * @param app_notif_prefs Prefs of the app, may be NULL.
- * @param title Notification title.
- * @param subtitle Notification subtitle, matched as part of the title.
- * @param body Notification body.
- * @return true if the notification should be filtered out.
- */
-bool ancs_filtering_matches_rules(const iOSNotifPrefs *app_notif_prefs, const ANCSAttribute *title,
-                                  const ANCSAttribute *subtitle, const ANCSAttribute *body);
+//! Evaluates the app's iOS notification filter rules.
+//! Rules are a block-list unless one of them is the "@allow" marker, in which case the
+//! remaining rules form an allow-list. Returns true if the notification should be dropped.
+bool ancs_filtering_should_ignore_by_rules(const iOSNotifPrefs *app_notif_prefs,
+                                           const ANCSAttribute *title_attr,
+                                           const ANCSAttribute *subtitle_attr,
+                                           const ANCSAttribute *body_attr);
 
 /** @} */
