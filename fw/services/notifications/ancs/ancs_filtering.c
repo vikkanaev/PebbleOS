@@ -112,12 +112,16 @@ static bool prv_match_rule(uint8_t match_type, uint8_t match_field, bool case_se
 // rules from a block-list to an allow-list. Its field and case flags are ignored.
 static const char s_allow_marker[] = "@allow";
 
+static bool prv_is_marker_trim_char(char c) {
+  return (c == ' ') || (c == '\t') || (c == '\r') || (c == '\n');
+}
+
 static bool prv_is_allow_marker(const char *pattern, size_t pattern_len) {
-  while ((pattern_len > 0) && (pattern[0] == ' ')) {
+  while ((pattern_len > 0) && prv_is_marker_trim_char(pattern[0])) {
     pattern++;
     pattern_len--;
   }
-  while ((pattern_len > 0) && (pattern[pattern_len - 1] == ' ')) {
+  while ((pattern_len > 0) && prv_is_marker_trim_char(pattern[pattern_len - 1])) {
     pattern_len--;
   }
   const size_t marker_len = sizeof(s_allow_marker) - 1;
@@ -164,6 +168,7 @@ static FilteringRulesResult prv_evaluate_rules(const iOSNotifPrefs *app_notif_pr
   const FilteringRulesSerialized *serialized_rules = (const FilteringRulesSerialized *)rules->data;
   size_t remaining = rules->serialized_byte_length - 1;
   const uint8_t *cursor = serialized_rules->data;
+  uint8_t parsed = 0;
   // No early exit: a marker may follow a matching rule.
   for (uint8_t i = 0; i < serialized_rules->count; i++) {
     if (remaining < sizeof(FilteringRuleSerialized)) {
@@ -187,6 +192,11 @@ static FilteringRulesResult prv_evaluate_rules(const iOSNotifPrefs *app_notif_pr
     }
     cursor = (const uint8_t *)(terminator + 1);
     remaining -= (pattern_len + 1);
+    parsed++;
+  }
+  if (parsed < serialized_rules->count) {
+    PBL_LOG_WRN("Filter rules truncated: parsed %u of %u", (unsigned)parsed,
+                (unsigned)serialized_rules->count);
   }
 
   kernel_free(allocated_body);
